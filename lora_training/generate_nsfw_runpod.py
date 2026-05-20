@@ -42,10 +42,10 @@ NSFW_LORA_URL    = "https://huggingface.co/Heartsync/Flux-NSFW-uncensored/resolv
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def call_runpod(payload: dict, timeout_sec: int = 1200) -> dict:
+def call_runpod(payload: dict, timeout_sec: int = 1800) -> dict:
     """
-    Envía un job a RunPod Serverless y espera el resultado.
-    Usa /runsync para esperar hasta que la imagen esté lista.
+    Envía un job con /run (async) y hace polling hasta COMPLETED.
+    IMPORTANTE: /runsync tiene tope fijo de ~600s en RunPod — no usarlo aquí.
     """
     if not RUNPOD_API_KEY or not RUNPOD_ENDPOINT:
         print("❌ ERROR: Falta configurar RUNPOD_API_KEY y RUNPOD_ENDPOINT")
@@ -54,16 +54,21 @@ def call_runpod(payload: dict, timeout_sec: int = 1200) -> dict:
         print("   export RUNPOD_ENDPOINT='tu_endpoint_id_aqui'")
         sys.exit(1)
 
-    url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT}/runsync"
+    base_url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT}"
     headers = {
         "Authorization": f"Bearer {RUNPOD_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
 
-    print(f"\n📤 Enviando job a RunPod...")
+    print(f"\n📤 Enviando job a RunPod (/run async, sin límite 600s)...")
     print(f"   Endpoint: {RUNPOD_ENDPOINT}")
 
-    resp = requests.post(url, json={"input": payload}, headers=headers, timeout=timeout_sec)
+    resp = requests.post(
+        f"{base_url}/run",
+        json={"input": payload},
+        headers=headers,
+        timeout=60,
+    )
 
     if resp.status_code != 200:
         print(f"\n❌ Error HTTP {resp.status_code}:")
@@ -74,31 +79,33 @@ def call_runpod(payload: dict, timeout_sec: int = 1200) -> dict:
     job_id = data.get("id")
     status = data.get("status")
 
-    # Si entra en cola o está en progreso (común durante arranques en frío/cold start),
-    # entramos en un bucle de sondeo para esperar el resultado.
-    if status in ["IN_QUEUE", "IN_PROGRESS"]:
-        print(f"\n⏳ Esperando worker (cold start + FLUX + LoRAs puede tardar 10-15 min la 1ª vez)...")
-        print(f"   Job ID: {job_id}")
-        print(f"   Timeout cliente: {timeout_sec}s — en RunPod sube 'Execution Timeout' a ≥900s")
+    if not job_id:
+        print(f"\n❌ Respuesta sin job id: {data}")
+        sys.exit(1)
 
-        status_url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT}/status/{job_id}"
-        poll_start = time.time()
+    print(f"\n⏳ Esperando worker (1ª vez: cold start + LoRAs, puede tardar 15-20 min)...")
+    print(f"   Job ID: {job_id}")
+    print(f"   Timeout cliente: {timeout_sec}s")
+    print(f"   En RunPod → Settings → Execution Timeout: 1200 o 1800")
 
-        while status in ["IN_QUEUE", "IN_PROGRESS"]:
-            elapsed = int(time.time() - poll_start)
-            if elapsed > timeout_sec:
-                print(f"\n❌ Timeout local tras {elapsed}s. Revisa logs en RunPod.")
-                sys.exit(1)
-            time.sleep(10)
-            status_resp = requests.get(status_url, headers=headers, timeout=30)
+    status_url = f"{base_url}/status/{job_id}"
+    poll_start = time.time()
 
-            if status_resp.status_code != 200:
-                print(f"\n❌ Error al consultar estado: HTTP {status_resp.status_code}")
-                sys.exit(1)
+    while status in ["IN_QUEUE", "IN_PROGRESS"]:
+        elapsed = int(time.time() - poll_start)
+        if elapsed > timeout_sec:
+            print(f"\n❌ Timeout local tras {elapsed}s. Revisa logs en RunPod.")
+            sys.exit(1)
+        time.sleep(10)
+        status_resp = requests.get(status_url, headers=headers, timeout=30)
 
-            data = status_resp.json()
-            status = data.get("status")
-            print(f"   [{elapsed}s] Estado: {status}")
+        if status_resp.status_code != 200:
+            print(f"\n❌ Error al consultar estado: HTTP {status_resp.status_code}")
+            sys.exit(1)
+
+        data = status_resp.json()
+        status = data.get("status")
+        print(f"   [{elapsed}s] Estado: {status}")
 
     if status == "FAILED":
         print(f"\n❌ El job falló en RunPod:")
@@ -155,8 +162,8 @@ def main():
                         help="768 recomendado con sequential offload en GPU 24GB")
     parser.add_argument("--height", type=int, default=768)
     parser.add_argument("--steps",  type=int, default=24)
-    parser.add_argument("--timeout", type=int, default=1200,
-                        help="Segundos máximos de espera (default 1200)")
+    parser.add_argument("--timeout", type=int, default=1800,
+                        help="Segundos máximos de espera (default 1800)")
     parser.add_argument("--guidance", type=float, default=3.5)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--output-dir", default="./test_outputs")

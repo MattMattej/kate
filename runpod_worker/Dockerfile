@@ -13,6 +13,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CPU_OFFLOAD_TYPE=sequential \
     MAX_IMAGE_SIDE=768 \
     DEFAULT_STEPS=24 \
+    FUSE_LORAS=0 \
     PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # Dependencias del sistema

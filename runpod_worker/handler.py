@@ -25,6 +25,8 @@ DEFAULT_STEPS = int(os.environ.get("DEFAULT_STEPS", "24"))
 # URLs por defecto (precarga al arranque — evita recargar/fusionar en cada job)
 ENV_LORA1_URL = os.environ.get("LORA1_URL", "").strip()
 ENV_LORA2_URL = os.environ.get("LORA2_URL", "").strip()
+# fuse_lora en CPU con FLUX tarda 15-30 min y parece colgado; en RTX 4090 basta set_adapters
+FUSE_LORAS = os.environ.get("FUSE_LORAS", "0").strip() in ("1", "true", "yes")
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Estado global: LoRAs ya fusionados en el pipeline
@@ -78,44 +80,53 @@ def apply_loras(lora1_url: str, lora1_scale: float, lora2_url: str, lora2_scale:
 
     cache_key = (lora1_url, lora2_url, lora1_scale, lora2_scale)
     if cache_key == _lora_cache_key:
-        print("   ♻️  LoRAs ya cargados y fusionados (caché)")
+        print("   ♻️  LoRAs en caché — saltando recarga")
         return [n for n, u in [("kate", lora1_url), ("nsfw", lora2_url)] if u]
 
     t0 = time.time()
-    print("   📦 Cargando y fusionando LoRAs (solo cuando cambian URLs/escalas)...")
+    print("   📦 Cargando LoRAs...")
 
-    try:
-        pipe.unfuse_lora()
-    except Exception:
-        pass
+    if FUSE_LORAS:
+        try:
+            pipe.unfuse_lora()
+        except Exception:
+            pass
 
     pipe.remove_all_hooks()
     pipe.unload_lora_weights()
     pipe.to("cpu")
     free_gpu_memory()
 
+    lora_paths: list[str] = []
     lora_names: list[str] = []
     lora_scales: list[float] = []
 
     if lora1_url:
-        path = download_lora(lora1_url, "kate_identity")
-        pipe.load_lora_weights(path, adapter_name="kate")
+        lora_paths.append(download_lora(lora1_url, "kate_identity"))
         lora_names.append("kate")
         lora_scales.append(lora1_scale)
-        print(f"   ✓ LoRA kate cargado ({time.time() - t0:.1f}s)")
 
     if lora2_url:
-        path = download_lora(lora2_url, "nsfw_style")
-        pipe.load_lora_weights(path, adapter_name="nsfw")
+        lora_paths.append(download_lora(lora2_url, "nsfw_style"))
         lora_names.append("nsfw")
         lora_scales.append(lora2_scale)
-        print(f"   ✓ LoRA nsfw cargado ({time.time() - t0:.1f}s)")
+
+    if len(lora_paths) == 1:
+        pipe.load_lora_weights(lora_paths[0], adapter_name=lora_names[0])
+    elif len(lora_paths) > 1:
+        pipe.load_lora_weights(lora_paths, adapter_name=lora_names)
 
     if lora_names:
-        print("   🔗 Fusionando LoRAs en transformer (puede tardar 2-5 min)...")
+        print(f"   ✓ LoRAs cargados en batch ({time.time() - t0:.1f}s)")
+
+    if lora_names:
         pipe.set_adapters(lora_names, adapter_weights=lora_scales)
-        pipe.fuse_lora(adapter_names=lora_names)
-        print(f"   ✅ LoRAs fusionados: {lora_names} escalas {lora_scales} ({time.time() - t0:.1f}s total)")
+        if FUSE_LORAS:
+            print("   🔗 Fusionando LoRAs (FUSE_LORAS=1, puede tardar 15-30 min en CPU)...")
+            pipe.fuse_lora(adapter_names=lora_names)
+            print(f"   ✅ LoRAs fusionados ({time.time() - t0:.1f}s total)")
+        else:
+            print(f"   ✅ LoRAs activos sin fusión: {lora_names} ({time.time() - t0:.1f}s)")
 
     free_gpu_memory()
     print("   ⚙️  Activando CPU offload...")
@@ -136,19 +147,22 @@ if getattr(pipe, "vae", None) is not None:
     pipe.vae.enable_slicing()
     pipe.vae.enable_tiling()
 
-if OFFLOAD_TYPE == "sequential":
-    print("   ⚙️  Sequential CPU offload (ahorro VRAM)")
-else:
-    print("   ⚙️  Model CPU offload")
-enable_cpu_offload()
-print("✅ Modelo base cargado.")
-
 os.makedirs(LORA_DIR, exist_ok=True)
 
+# Precargar LoRAs antes del primer job (apply_loras activa offload al final)
 if ENV_LORA1_URL or ENV_LORA2_URL:
-    print("🔄 Precargando LoRAs desde variables de entorno...")
+    print("🔄 Precargando LoRAs en cold start...")
+    _lora_cache_key = None
     apply_loras(ENV_LORA1_URL, 0.85, ENV_LORA2_URL, 0.5)
-    print("✅ LoRAs precargados — el primer job será mucho más rápido.")
+    print("✅ LoRAs listos en cold start.")
+else:
+    if OFFLOAD_TYPE == "sequential":
+        print("   ⚙️  Sequential CPU offload (ahorro VRAM)")
+    else:
+        print("   ⚙️  Model CPU offload")
+    enable_cpu_offload()
+
+print("✅ Modelo base cargado.")
 
 
 def handler(job):
