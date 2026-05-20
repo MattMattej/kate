@@ -42,7 +42,7 @@ NSFW_LORA_URL    = "https://huggingface.co/Heartsync/Flux-NSFW-uncensored/resolv
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def call_runpod(payload: dict, timeout_sec: int = 300) -> dict:
+def call_runpod(payload: dict, timeout_sec: int = 1200) -> dict:
     """
     Envía un job a RunPod Serverless y espera el resultado.
     Usa /runsync para esperar hasta que la imagen esté lista.
@@ -77,22 +77,28 @@ def call_runpod(payload: dict, timeout_sec: int = 300) -> dict:
     # Si entra en cola o está en progreso (común durante arranques en frío/cold start),
     # entramos en un bucle de sondeo para esperar el resultado.
     if status in ["IN_QUEUE", "IN_PROGRESS"]:
-        print(f"\n⏳ El servidor se está iniciando (Cold Start)...")
+        print(f"\n⏳ Esperando worker (cold start + FLUX + LoRAs puede tardar 10-15 min la 1ª vez)...")
         print(f"   Job ID: {job_id}")
-        
+        print(f"   Timeout cliente: {timeout_sec}s — en RunPod sube 'Execution Timeout' a ≥900s")
+
         status_url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT}/status/{job_id}"
-        
+        poll_start = time.time()
+
         while status in ["IN_QUEUE", "IN_PROGRESS"]:
-            time.sleep(5)
+            elapsed = int(time.time() - poll_start)
+            if elapsed > timeout_sec:
+                print(f"\n❌ Timeout local tras {elapsed}s. Revisa logs en RunPod.")
+                sys.exit(1)
+            time.sleep(10)
             status_resp = requests.get(status_url, headers=headers, timeout=30)
-            
+
             if status_resp.status_code != 200:
                 print(f"\n❌ Error al consultar estado: HTTP {status_resp.status_code}")
                 sys.exit(1)
-                
+
             data = status_resp.json()
             status = data.get("status")
-            print(f"   [Estado: {status}] ...esperando")
+            print(f"   [{elapsed}s] Estado: {status}")
 
     if status == "FAILED":
         print(f"\n❌ El job falló en RunPod:")
@@ -145,9 +151,12 @@ def main():
                         help="URL directa al .safetensors del LoRA NSFW")
     parser.add_argument("--lora2-scale", type=float, default=0.5,
                         help="Intensidad del LoRA NSFW (0.3-0.7)")
-    parser.add_argument("--width",  type=int, default=1024)
-    parser.add_argument("--height", type=int, default=1024)
-    parser.add_argument("--steps",  type=int, default=28)
+    parser.add_argument("--width",  type=int, default=768,
+                        help="768 recomendado con sequential offload en GPU 24GB")
+    parser.add_argument("--height", type=int, default=768)
+    parser.add_argument("--steps",  type=int, default=24)
+    parser.add_argument("--timeout", type=int, default=1200,
+                        help="Segundos máximos de espera (default 1200)")
     parser.add_argument("--guidance", type=float, default=3.5)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--output-dir", default="./test_outputs")
@@ -176,7 +185,7 @@ def main():
         payload["seed"] = args.seed
 
     t0 = time.time()
-    output = call_runpod(payload)
+    output = call_runpod(payload, timeout_sec=args.timeout)
     elapsed = time.time() - t0
 
     gen_time = output.get("generation_time_seconds", "?")

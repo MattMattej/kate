@@ -3,10 +3,6 @@
 =============================================================================
 RunPod Worker — Pixel Kate NSFW Generator
 =============================================================================
-Este archivo es el "cerebro" que corre DENTRO del servidor de RunPod.
-Recibe un request JSON con el prompt y las URLs de los LoRAs,
-genera la imagen con FLUX Dev y devuelve la imagen en base64.
-=============================================================================
 """
 
 import gc
@@ -23,11 +19,16 @@ from diffusers import FluxPipeline
 MODEL_ID = "camenduru/FLUX.1-dev-diffusers"
 LORA_DIR = "/tmp/loras"
 HF_TOKEN = os.environ.get("HF_TOKEN", "")
-# sequential = capas una a una (menos VRAM). model = módulo entero en GPU (más rápido, OOM con dual LoRA)
 OFFLOAD_TYPE = os.environ.get("CPU_OFFLOAD_TYPE", "sequential").lower()
-# Resolución máxima si el cliente pide más (protege GPUs de 24GB)
-MAX_SIDE = int(os.environ.get("MAX_IMAGE_SIDE", "1024"))
+MAX_SIDE = int(os.environ.get("MAX_IMAGE_SIDE", "768"))
+DEFAULT_STEPS = int(os.environ.get("DEFAULT_STEPS", "24"))
+# URLs por defecto (precarga al arranque — evita recargar/fusionar en cada job)
+ENV_LORA1_URL = os.environ.get("LORA1_URL", "").strip()
+ENV_LORA2_URL = os.environ.get("LORA2_URL", "").strip()
 # ─────────────────────────────────────────────────────────────────────────────
+
+# Estado global: LoRAs ya fusionados en el pipeline
+_lora_cache_key: tuple | None = None
 
 
 def free_gpu_memory():
@@ -38,7 +39,6 @@ def free_gpu_memory():
 
 
 def enable_cpu_offload():
-    """Aplica CPU offload limpio (sin hooks duplicados)."""
     pipe.remove_all_hooks()
     if OFFLOAD_TYPE == "sequential":
         pipe.enable_sequential_cpu_offload()
@@ -54,33 +54,9 @@ def clamp_resolution(width: int, height: int) -> tuple[int, int]:
     return int(width * scale), int(height * scale)
 
 
-# Cargamos el pipeline UNA sola vez al arrancar el worker (no en cada request)
-print("🔄 Cargando FLUX.1-dev en GPU...")
-pipe = FluxPipeline.from_pretrained(
-    MODEL_ID,
-    torch_dtype=torch.bfloat16,
-    token=HF_TOKEN if HF_TOKEN else None,
-)
-pipe.enable_attention_slicing("max")
-if getattr(pipe, "vae", None) is not None:
-    pipe.vae.enable_slicing()
-    pipe.vae.enable_tiling()
-
-if OFFLOAD_TYPE == "sequential":
-    print("   ⚙️  Activando sequential CPU offload (modo ahorro de VRAM)...")
-else:
-    print("   ⚙️  Activando model CPU offload (requiere GPU ≥40GB con dual LoRA)...")
-enable_cpu_offload()
-print("✅ Modelo base cargado.")
-
-os.makedirs(LORA_DIR, exist_ok=True)
-
-
 def download_lora(url: str, name: str) -> str:
-    """Descarga un LoRA desde una URL pública y devuelve la ruta local."""
     local_path = os.path.join(LORA_DIR, f"{name}.safetensors")
     if os.path.exists(local_path):
-        print(f"   ♻️  LoRA '{name}' ya está en caché.")
         return local_path
 
     print(f"   📥 Descargando LoRA '{name}' desde: {url[:60]}...")
@@ -93,32 +69,99 @@ def download_lora(url: str, name: str) -> str:
     return local_path
 
 
-def handler(job):
+def apply_loras(lora1_url: str, lora1_scale: float, lora2_url: str, lora2_scale: float) -> list[str]:
     """
-    Función principal del worker. RunPod llama esto por cada request.
+    Carga y fusiona LoRAs solo si cambió la combinación URL/escala.
+    La fusión en CPU tarda varios minutos — no repetir en cada request.
+    """
+    global _lora_cache_key
 
-    Input esperado (job["input"]):
-        prompt       (str)   : Descripción de la imagen
-        lora1_url    (str)   : URL directa al .safetensors del LoRA de Kate
-        lora1_scale  (float) : Intensidad del LoRA de Kate (default: 0.85)
-        lora2_url    (str)   : URL directa al .safetensors del LoRA NSFW (opcional)
-        lora2_scale  (float) : Intensidad del LoRA NSFW (default: 0.5)
-        width        (int)   : Ancho de la imagen (default: 1024)
-        height       (int)   : Alto de la imagen (default: 1024)
-        steps        (int)   : Pasos de inferencia (default: 28)
-        guidance     (float) : Guidance scale (default: 3.5)
-        seed         (int)   : Semilla aleatoria (opcional)
-    """
+    cache_key = (lora1_url, lora2_url, lora1_scale, lora2_scale)
+    if cache_key == _lora_cache_key:
+        print("   ♻️  LoRAs ya cargados y fusionados (caché)")
+        return [n for n, u in [("kate", lora1_url), ("nsfw", lora2_url)] if u]
+
+    t0 = time.time()
+    print("   📦 Cargando y fusionando LoRAs (solo cuando cambian URLs/escalas)...")
+
+    try:
+        pipe.unfuse_lora()
+    except Exception:
+        pass
+
+    pipe.remove_all_hooks()
+    pipe.unload_lora_weights()
+    pipe.to("cpu")
+    free_gpu_memory()
+
+    lora_names: list[str] = []
+    lora_scales: list[float] = []
+
+    if lora1_url:
+        path = download_lora(lora1_url, "kate_identity")
+        pipe.load_lora_weights(path, adapter_name="kate")
+        lora_names.append("kate")
+        lora_scales.append(lora1_scale)
+        print(f"   ✓ LoRA kate cargado ({time.time() - t0:.1f}s)")
+
+    if lora2_url:
+        path = download_lora(lora2_url, "nsfw_style")
+        pipe.load_lora_weights(path, adapter_name="nsfw")
+        lora_names.append("nsfw")
+        lora_scales.append(lora2_scale)
+        print(f"   ✓ LoRA nsfw cargado ({time.time() - t0:.1f}s)")
+
+    if lora_names:
+        print("   🔗 Fusionando LoRAs en transformer (puede tardar 2-5 min)...")
+        pipe.set_adapters(lora_names, adapter_weights=lora_scales)
+        pipe.fuse_lora(adapter_names=lora_names)
+        print(f"   ✅ LoRAs fusionados: {lora_names} escalas {lora_scales} ({time.time() - t0:.1f}s total)")
+
+    free_gpu_memory()
+    print("   ⚙️  Activando CPU offload...")
+    enable_cpu_offload()
+    _lora_cache_key = cache_key
+    return lora_names
+
+
+# ── Arranque del worker (cold start) ─────────────────────────────────────────
+print("🔄 Cargando FLUX.1-dev...")
+pipe = FluxPipeline.from_pretrained(
+    MODEL_ID,
+    torch_dtype=torch.bfloat16,
+    token=HF_TOKEN if HF_TOKEN else None,
+)
+pipe.enable_attention_slicing("max")
+if getattr(pipe, "vae", None) is not None:
+    pipe.vae.enable_slicing()
+    pipe.vae.enable_tiling()
+
+if OFFLOAD_TYPE == "sequential":
+    print("   ⚙️  Sequential CPU offload (ahorro VRAM)")
+else:
+    print("   ⚙️  Model CPU offload")
+enable_cpu_offload()
+print("✅ Modelo base cargado.")
+
+os.makedirs(LORA_DIR, exist_ok=True)
+
+if ENV_LORA1_URL or ENV_LORA2_URL:
+    print("🔄 Precargando LoRAs desde variables de entorno...")
+    apply_loras(ENV_LORA1_URL, 0.85, ENV_LORA2_URL, 0.5)
+    print("✅ LoRAs precargados — el primer job será mucho más rápido.")
+
+
+def handler(job):
     job_input = job["input"]
 
     prompt = job_input.get("prompt", "a beautiful woman, portrait")
-    lora1_url = job_input.get("lora1_url", "")
+    lora1_url = job_input.get("lora1_url", ENV_LORA1_URL)
     lora1_scale = float(job_input.get("lora1_scale", 0.85))
-    lora2_url = job_input.get("lora2_url", "")
+    lora2_url = job_input.get("lora2_url", ENV_LORA2_URL)
     lora2_scale = float(job_input.get("lora2_scale", 0.5))
-    width = int(job_input.get("width", 1024))
-    height = int(job_input.get("height", 1024))
-    steps = int(job_input.get("steps", 28))
+    width = int(job_input.get("width", MAX_SIDE))
+    height = int(job_input.get("height", MAX_SIDE))
+    steps = int(job_input.get("steps", DEFAULT_STEPS))
     guidance = float(job_input.get("guidance", 3.5))
     seed = job_input.get("seed", None)
 
@@ -126,47 +169,10 @@ def handler(job):
 
     print(f"\n🎨 Nuevo job recibido:")
     print(f"   Prompt: {prompt[:80]}")
-    print(f"   LoRA1 scale: {lora1_scale} | LoRA2 scale: {lora2_scale}")
-    print(f"   Resolución: {width}x{height} | Offload: {OFFLOAD_TYPE}")
+    print(f"   Resolución: {width}x{height} | Steps: {steps} | Offload: {OFFLOAD_TYPE}")
 
     try:
-        lora1_path = download_lora(lora1_url, "kate_identity") if lora1_url else None
-        lora2_path = download_lora(lora2_url, "nsfw_style") if lora2_url else None
-
-        # Liberar VRAM: quitar hooks, deshacer fusión previa y cargar LoRAs en CPU
-        print("   📦 Preparando LoRAs (CPU, sin hooks)...")
-        try:
-            pipe.unfuse_lora()
-        except Exception:
-            pass
-
-        pipe.remove_all_hooks()
-        pipe.unload_lora_weights()
-        pipe.to("cpu")
-        free_gpu_memory()
-
-        lora_names = []
-        lora_scales = []
-
-        if lora1_path:
-            pipe.load_lora_weights(lora1_path, adapter_name="kate")
-            lora_names.append("kate")
-            lora_scales.append(lora1_scale)
-
-        if lora2_path:
-            pipe.load_lora_weights(lora2_path, adapter_name="nsfw")
-            lora_names.append("nsfw")
-            lora_scales.append(lora2_scale)
-
-        if lora_names:
-            pipe.set_adapters(lora_names, adapter_weights=lora_scales)
-            # Fusionar adapters reduce VRAM en inferencia (crítico con dual LoRA)
-            pipe.fuse_lora(adapter_names=lora_names)
-            print(f"   ✅ LoRAs fusionados: {lora_names} escalas {lora_scales}")
-
-        free_gpu_memory()
-        print("   ⚙️  Re-activando CPU offload para inferencia...")
-        enable_cpu_offload()
+        lora_names = apply_loras(lora1_url, lora1_scale, lora2_url, lora2_scale)
 
         generator = torch.Generator("cuda").manual_seed(seed) if seed else None
 
@@ -209,14 +215,5 @@ def handler(job):
         free_gpu_memory()
         return {"error": str(e)}
 
-    finally:
-        # Dejar el worker listo para el siguiente job sin fugas de VRAM
-        try:
-            pipe.unfuse_lora()
-        except Exception:
-            pass
-        free_gpu_memory()
 
-
-# Punto de entrada de RunPod
 runpod.serverless.start({"handler": handler})

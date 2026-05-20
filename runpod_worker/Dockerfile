@@ -11,7 +11,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HF_HOME=/workspace/cache/huggingface \
     HF_HUB_ENABLE_HF_TRANSFER=0 \
     CPU_OFFLOAD_TYPE=sequential \
-    MAX_IMAGE_SIDE=1024 \
+    MAX_IMAGE_SIDE=768 \
+    DEFAULT_STEPS=24 \
     PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # Dependencias del sistema
