@@ -9,6 +9,7 @@ genera la imagen con FLUX Dev y devuelve la imagen en base64.
 =============================================================================
 """
 
+import gc
 import os
 import io
 import time
@@ -17,13 +18,41 @@ import runpod
 import torch
 import requests
 from diffusers import FluxPipeline
-from huggingface_hub import hf_hub_download
 
 # ── Configuración ────────────────────────────────────────────────────────────
-MODEL_ID  = "camenduru/FLUX.1-dev-diffusers"
-LORA_DIR  = "/tmp/loras"
-HF_TOKEN  = os.environ.get("HF_TOKEN", "")  # Ya no es estrictamente necesario gracias al mirror libre
+MODEL_ID = "camenduru/FLUX.1-dev-diffusers"
+LORA_DIR = "/tmp/loras"
+HF_TOKEN = os.environ.get("HF_TOKEN", "")
+# sequential = capas una a una (menos VRAM). model = módulo entero en GPU (más rápido, OOM con dual LoRA)
+OFFLOAD_TYPE = os.environ.get("CPU_OFFLOAD_TYPE", "sequential").lower()
+# Resolución máxima si el cliente pide más (protege GPUs de 24GB)
+MAX_SIDE = int(os.environ.get("MAX_IMAGE_SIDE", "1024"))
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def free_gpu_memory():
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
+
+def enable_cpu_offload():
+    """Aplica CPU offload limpio (sin hooks duplicados)."""
+    pipe.remove_all_hooks()
+    if OFFLOAD_TYPE == "sequential":
+        pipe.enable_sequential_cpu_offload()
+    else:
+        pipe.enable_model_cpu_offload()
+
+
+def clamp_resolution(width: int, height: int) -> tuple[int, int]:
+    side = max(width, height)
+    if side <= MAX_SIDE:
+        return width, height
+    scale = MAX_SIDE / side
+    return int(width * scale), int(height * scale)
+
 
 # Cargamos el pipeline UNA sola vez al arrancar el worker (no en cada request)
 print("🔄 Cargando FLUX.1-dev en GPU...")
@@ -32,14 +61,16 @@ pipe = FluxPipeline.from_pretrained(
     torch_dtype=torch.bfloat16,
     token=HF_TOKEN if HF_TOKEN else None,
 )
-# Optimización de VRAM inteligente según la capacidad de la GPU
-OFFLOAD_TYPE = os.environ.get("CPU_OFFLOAD_TYPE", "model").lower()
+pipe.enable_attention_slicing("max")
+if getattr(pipe, "vae", None) is not None:
+    pipe.vae.enable_slicing()
+    pipe.vae.enable_tiling()
+
 if OFFLOAD_TYPE == "sequential":
-    print("   ⚙️  Activando secuencial CPU offload (Modo ultra ahorro de VRAM)...")
-    pipe.enable_sequential_cpu_offload()
+    print("   ⚙️  Activando sequential CPU offload (modo ahorro de VRAM)...")
 else:
-    print("   ⚙️  Activando model CPU offload (Modo rendimiento balanceado)...")
-    pipe.enable_model_cpu_offload()
+    print("   ⚙️  Activando model CPU offload (requiere GPU ≥40GB con dual LoRA)...")
+enable_cpu_offload()
 print("✅ Modelo base cargado.")
 
 os.makedirs(LORA_DIR, exist_ok=True)
@@ -65,7 +96,7 @@ def download_lora(url: str, name: str) -> str:
 def handler(job):
     """
     Función principal del worker. RunPod llama esto por cada request.
-    
+
     Input esperado (job["input"]):
         prompt       (str)   : Descripción de la imagen
         lora1_url    (str)   : URL directa al .safetensors del LoRA de Kate
@@ -80,50 +111,41 @@ def handler(job):
     """
     job_input = job["input"]
 
-    # Parámetros del request
-    prompt      = job_input.get("prompt", "a beautiful woman, portrait")
-    lora1_url   = job_input.get("lora1_url", "")
+    prompt = job_input.get("prompt", "a beautiful woman, portrait")
+    lora1_url = job_input.get("lora1_url", "")
     lora1_scale = float(job_input.get("lora1_scale", 0.85))
-    lora2_url   = job_input.get("lora2_url", "")
+    lora2_url = job_input.get("lora2_url", "")
     lora2_scale = float(job_input.get("lora2_scale", 0.5))
-    width       = int(job_input.get("width", 1024))
-    height      = int(job_input.get("height", 1024))
-    steps       = int(job_input.get("steps", 28))
-    guidance    = float(job_input.get("guidance", 3.5))
-    seed        = job_input.get("seed", None)
+    width = int(job_input.get("width", 1024))
+    height = int(job_input.get("height", 1024))
+    steps = int(job_input.get("steps", 28))
+    guidance = float(job_input.get("guidance", 3.5))
+    seed = job_input.get("seed", None)
+
+    width, height = clamp_resolution(width, height)
 
     print(f"\n🎨 Nuevo job recibido:")
     print(f"   Prompt: {prompt[:80]}")
     print(f"   LoRA1 scale: {lora1_scale} | LoRA2 scale: {lora2_scale}")
+    print(f"   Resolución: {width}x{height} | Offload: {OFFLOAD_TYPE}")
 
     try:
-        # ── Cargar LoRAs dinámicamente ────────────────────────────────────────
-        # Primero descargar los LoRAs si se pasaron URLs
-        lora1_path = None
-        lora2_path = None
+        lora1_path = download_lora(lora1_url, "kate_identity") if lora1_url else None
+        lora2_path = download_lora(lora2_url, "nsfw_style") if lora2_url else None
 
-        if lora1_url:
-            lora1_path = download_lora(lora1_url, "kate_identity")
-        if lora2_url:
-            lora2_path = download_lora(lora2_url, "nsfw_style")
+        # Liberar VRAM: quitar hooks, deshacer fusión previa y cargar LoRAs en CPU
+        print("   📦 Preparando LoRAs (CPU, sin hooks)...")
+        try:
+            pipe.unfuse_lora()
+        except Exception:
+            pass
 
-        # ⚠️ CRÍTICO: Para evitar errores de CUDA (device mismatch) y liberar VRAM:
-        # 1. Removemos temporalmente todos los hooks de CPU offload.
-        # 2. Movemos todo el pipeline a la CPU para liberar el 100% de la VRAM.
-        # 3. Limpiamos el caché de CUDA.
-        # Esto permite que PEFT aplique los LoRAs de forma segura en memoria de sistema (RAM)
-        # sin saturar la VRAM de la GPU.
-        print("   📦 Desactivando hooks y liberando VRAM temporalmente...")
         pipe.remove_all_hooks()
-        pipe.to("cpu")
-        torch.cuda.empty_cache()
-
-        # Aplicar LoRAs al pipeline usando diffusers
-        # Necesitamos unload primero para limpiar LoRAs anteriores
         pipe.unload_lora_weights()
+        pipe.to("cpu")
+        free_gpu_memory()
 
-        lora_paths  = []
-        lora_names  = []
+        lora_names = []
         lora_scales = []
 
         if lora1_path:
@@ -138,16 +160,14 @@ def handler(job):
 
         if lora_names:
             pipe.set_adapters(lora_names, adapter_weights=lora_scales)
-            print(f"   ✅ LoRAs activos: {lora_names} con escalas {lora_scales}")
+            # Fusionar adapters reduce VRAM en inferencia (crítico con dual LoRA)
+            pipe.fuse_lora(adapter_names=lora_names)
+            print(f"   ✅ LoRAs fusionados: {lora_names} escalas {lora_scales}")
 
-         # ⚠️ Re-activamos CPU offload para liberar VRAM antes de correr la inferencia
-         print("   ⚙️  Re-activando CPU offload para inferencia...")
-         if OFFLOAD_TYPE == "sequential":
-             pipe.enable_sequential_cpu_offload()
-         else:
-             pipe.enable_model_cpu_offload()
+        free_gpu_memory()
+        print("   ⚙️  Re-activando CPU offload para inferencia...")
+        enable_cpu_offload()
 
-        # ── Generar imagen ────────────────────────────────────────────────────
         generator = torch.Generator("cuda").manual_seed(seed) if seed else None
 
         print(f"   ⚙️  Generando {width}x{height} con {steps} pasos...")
@@ -166,7 +186,6 @@ def handler(job):
         elapsed = time.time() - t0
         print(f"   ✅ Imagen generada en {elapsed:.1f}s")
 
-        # ── Convertir a base64 para devolver en el response ───────────────────
         image = result.images[0]
         buffer = io.BytesIO()
         image.save(buffer, format="JPEG", quality=95)
@@ -178,14 +197,25 @@ def handler(job):
             "width": width,
             "height": height,
             "generation_time_seconds": round(elapsed, 2),
-            "loras_used": lora_names
+            "loras_used": lora_names,
+            "offload_type": OFFLOAD_TYPE,
         }
 
     except Exception as e:
         print(f"❌ Error en el worker: {e}")
         import traceback
+
         traceback.print_exc()
+        free_gpu_memory()
         return {"error": str(e)}
+
+    finally:
+        # Dejar el worker listo para el siguiente job sin fugas de VRAM
+        try:
+            pipe.unfuse_lora()
+        except Exception:
+            pass
+        free_gpu_memory()
 
 
 # Punto de entrada de RunPod

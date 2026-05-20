@@ -9,7 +9,10 @@ FROM pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     HF_HOME=/workspace/cache/huggingface \
-    HF_HUB_ENABLE_HF_TRANSFER=0
+    HF_HUB_ENABLE_HF_TRANSFER=0 \
+    CPU_OFFLOAD_TYPE=sequential \
+    MAX_IMAGE_SIDE=1024 \
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # Dependencias del sistema
 RUN apt-get update && apt-get install -y --no-install-recommends \

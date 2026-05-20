@@ -16,7 +16,23 @@ import base64
 import argparse
 import requests
 
-# ── Config — Rellenar después de crear el endpoint en RunPod ────────────────
+# Cargar variables de entorno desde el archivo .env de forma manual para evitar dependencias
+def load_env():
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    for _ in range(5):  # buscar hasta 5 niveles arriba
+        env_path = os.path.join(current_dir, ".env")
+        if os.path.exists(env_path):
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        os.environ[k.strip()] = v.strip()
+            break
+        current_dir = os.path.dirname(current_dir)
+
+load_env()
+
 RUNPOD_API_KEY   = os.environ.get("RUNPOD_API_KEY", "")   # Tu API Key de RunPod
 RUNPOD_ENDPOINT  = os.environ.get("RUNPOD_ENDPOINT", "")  # ID del endpoint (ej: abc123xyz)
 
@@ -38,7 +54,7 @@ def call_runpod(payload: dict, timeout_sec: int = 300) -> dict:
         print("   export RUNPOD_ENDPOINT='tu_endpoint_id_aqui'")
         sys.exit(1)
 
-    url = f"https://api.runpod.io/v2/{RUNPOD_ENDPOINT}/runsync"
+    url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT}/runsync"
     headers = {
         "Authorization": f"Bearer {RUNPOD_API_KEY}",
         "Content-Type": "application/json"
@@ -55,7 +71,28 @@ def call_runpod(payload: dict, timeout_sec: int = 300) -> dict:
         sys.exit(1)
 
     data = resp.json()
+    job_id = data.get("id")
     status = data.get("status")
+
+    # Si entra en cola o está en progreso (común durante arranques en frío/cold start),
+    # entramos en un bucle de sondeo para esperar el resultado.
+    if status in ["IN_QUEUE", "IN_PROGRESS"]:
+        print(f"\n⏳ El servidor se está iniciando (Cold Start)...")
+        print(f"   Job ID: {job_id}")
+        
+        status_url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT}/status/{job_id}"
+        
+        while status in ["IN_QUEUE", "IN_PROGRESS"]:
+            time.sleep(5)
+            status_resp = requests.get(status_url, headers=headers, timeout=30)
+            
+            if status_resp.status_code != 200:
+                print(f"\n❌ Error al consultar estado: HTTP {status_resp.status_code}")
+                sys.exit(1)
+                
+            data = status_resp.json()
+            status = data.get("status")
+            print(f"   [Estado: {status}] ...esperando")
 
     if status == "FAILED":
         print(f"\n❌ El job falló en RunPod:")
@@ -63,11 +100,17 @@ def call_runpod(payload: dict, timeout_sec: int = 300) -> dict:
         sys.exit(1)
 
     if status != "COMPLETED":
-        print(f"\n⚠️  Estado inesperado: {status}")
+        print(f"\n⚠️  Estado inesperado final: {status}")
         print(data)
         sys.exit(1)
 
-    return data.get("output", {})
+    output = data.get("output", {})
+    if output.get("error"):
+        print(f"\n❌ El worker devolvió error:")
+        print(f"   {output['error']}")
+        sys.exit(1)
+
+    return output
 
 
 def save_image(output: dict, output_dir: str = "./test_outputs") -> str:
