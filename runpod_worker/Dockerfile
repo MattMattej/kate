@@ -36,4 +36,4 @@ COPY handler.py .
 EXPOSE 8000
 
 # Comando de inicio
-CMD ["python", "-u", "handler.py"]
+CMD ["python3", "-u", "handler.py"]
