@@ -32,7 +32,14 @@ pipe = FluxPipeline.from_pretrained(
     torch_dtype=torch.bfloat16,
     token=HF_TOKEN if HF_TOKEN else None,
 )
-pipe.enable_model_cpu_offload()  # Gestión inteligente de VRAM
+# Optimización de VRAM inteligente según la capacidad de la GPU
+OFFLOAD_TYPE = os.environ.get("CPU_OFFLOAD_TYPE", "model").lower()
+if OFFLOAD_TYPE == "sequential":
+    print("   ⚙️  Activando secuencial CPU offload (Modo ultra ahorro de VRAM)...")
+    pipe.enable_sequential_cpu_offload()
+else:
+    print("   ⚙️  Activando model CPU offload (Modo rendimiento balanceado)...")
+    pipe.enable_model_cpu_offload()
 print("✅ Modelo base cargado.")
 
 os.makedirs(LORA_DIR, exist_ok=True)
@@ -133,9 +140,12 @@ def handler(job):
             pipe.set_adapters(lora_names, adapter_weights=lora_scales)
             print(f"   ✅ LoRAs activos: {lora_names} con escalas {lora_scales}")
 
-        # ⚠️ Re-activamos CPU offload para liberar VRAM antes de correr la inferencia
-        print("   ⚙️  Re-activando CPU offload para inferencia...")
-        pipe.enable_model_cpu_offload()
+         # ⚠️ Re-activamos CPU offload para liberar VRAM antes de correr la inferencia
+         print("   ⚙️  Re-activando CPU offload para inferencia...")
+         if OFFLOAD_TYPE == "sequential":
+             pipe.enable_sequential_cpu_offload()
+         else:
+             pipe.enable_model_cpu_offload()
 
         # ── Generar imagen ────────────────────────────────────────────────────
         generator = torch.Generator("cuda").manual_seed(seed) if seed else None
