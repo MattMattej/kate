@@ -19,7 +19,7 @@ WORKDIR /app
 
 # Copiar y instalar dependencias Python primero (mejor cache de Docker)
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python3 -m pip install --no-cache-dir -r requirements.txt
 
 # Copiar el handler
 COPY handler.py .
