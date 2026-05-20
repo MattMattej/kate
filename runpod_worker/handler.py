@@ -20,9 +20,9 @@ from diffusers import FluxPipeline
 from huggingface_hub import hf_hub_download
 
 # ── Configuración ────────────────────────────────────────────────────────────
-MODEL_ID  = "black-forest-labs/FLUX.1-dev"
+MODEL_ID  = "camenduru/FLUX.1-dev-diffusers"
 LORA_DIR  = "/tmp/loras"
-HF_TOKEN  = os.environ.get("HF_TOKEN", "")  # Solo necesario si bajas desde HF privado
+HF_TOKEN  = os.environ.get("HF_TOKEN", "")  # Ya no es estrictamente necesario gracias al mirror libre
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Cargamos el pipeline UNA sola vez al arrancar el worker (no en cada request)
