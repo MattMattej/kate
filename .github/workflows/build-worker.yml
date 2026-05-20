@@ -1,0 +1,29 @@
+name: Build & Push RunPod Worker
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'runpod_worker/**'
+  workflow_dispatch:  # Permite dispararlo manualmente desde GitHub UI
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Login en Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build y Push imagen a Docker Hub
+        uses: docker/build-push-action@v5
+        with:
+          context: ./runpod_worker
+          push: true
+          tags: mateomatt/pixel-kate-worker:latest
+

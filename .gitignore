@@ -1,0 +1,11 @@
+pixel_kate/onlysnarf/onlysnarf.json
+pixel_kate/**/*.json.secret
+pixel_kate/**/.env
+pixel_kate/**/.env.local
+pixel_kate/**/credentials.json
+pixel_kate/**/*_key.json
+pixel_kate/lora_training/test_outputs/
+pixel_kate/**/__pycache__/
+pixel_kate/**/*.pyc
+pixel_kate/**/*.pyo
+pixel_kate/lora_training/*_training_result.json

@@ -1,0 +1,25 @@
+{
+  "model_name": "pixel_kate_v1",
+  "training_result": {
+    "diffusers_lora_file": {
+      "url": "https://v3b.fal.media/files/b/0a9aca2a/hToqwVnqjQOWYiHgKNx9O_pytorch_lora_weights.safetensors",
+      "content_type": "application/octet-stream",
+      "file_name": "pytorch_lora_weights.safetensors",
+      "file_size": 89745224
+    },
+    "config_file": {
+      "url": "https://v3b.fal.media/files/b/0a9aca2a/vc5CcJkqge-tEKNSHSqDc_config.json",
+      "content_type": "application/octet-stream",
+      "file_name": "config.json",
+      "file_size": 508
+    },
+    "debug_preprocessed_output": null
+  },
+  "timestamp": "2026-05-19T01:23:11Z",
+  "instructions": {
+    "trigger_word": "Usa el trigger word en tus prompts para activar el estilo",
+    "example_prompt": "photo of KATESTYLE, beautiful woman, high quality, realistic",
+    "api_endpoint": "fal-ai/flux-lora",
+    "how_to_use": "Incluir la URL de config_file en llamadas a la API de generaci\u00f3n"
+  }
+}
