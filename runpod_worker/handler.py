@@ -97,27 +97,22 @@ def apply_loras(lora1_url: str, lora1_scale: float, lora2_url: str, lora2_scale:
     pipe.to("cpu")
     free_gpu_memory()
 
-    lora_paths: list[str] = []
     lora_names: list[str] = []
     lora_scales: list[float] = []
 
     if lora1_url:
-        lora_paths.append(download_lora(lora1_url, "kate_identity"))
+        path = download_lora(lora1_url, "kate_identity")
+        pipe.load_lora_weights(path, adapter_name="kate")
         lora_names.append("kate")
         lora_scales.append(lora1_scale)
+        print(f"   ✓ LoRA kate ({time.time() - t0:.1f}s)")
 
     if lora2_url:
-        lora_paths.append(download_lora(lora2_url, "nsfw_style"))
+        path = download_lora(lora2_url, "nsfw_style")
+        pipe.load_lora_weights(path, adapter_name="nsfw")
         lora_names.append("nsfw")
         lora_scales.append(lora2_scale)
-
-    if len(lora_paths) == 1:
-        pipe.load_lora_weights(lora_paths[0], adapter_name=lora_names[0])
-    elif len(lora_paths) > 1:
-        pipe.load_lora_weights(lora_paths, adapter_name=lora_names)
-
-    if lora_names:
-        print(f"   ✓ LoRAs cargados en batch ({time.time() - t0:.1f}s)")
+        print(f"   ✓ LoRA nsfw ({time.time() - t0:.1f}s)")
 
     if lora_names:
         pipe.set_adapters(lora_names, adapter_weights=lora_scales)
