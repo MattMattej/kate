@@ -101,10 +101,10 @@ def handler(job):
             lora2_path = download_lora(lora2_url, "nsfw_style")
 
         # ⚠️ CRÍTICO: Para evitar errores de CUDA (device mismatch / assertion),
-        # movemos el transformer a la GPU antes de manipular los pesos de los LoRAs,
-        # ya que CPU offload interfiere con el backend de PEFT.
-        print("   📦 Moviendo transformer a GPU para aplicar LoRAs...")
-        pipe.transformer.to("cuda")
+        # removemos temporalmente todos los hooks de CPU offload. Esto devuelve el
+        # pipeline a su estado limpio para que PEFT pueda modificar los pesos sin interferencia.
+        print("   📦 Desactivando hooks de CPU offload temporalmente...")
+        pipe.remove_all_hooks()
 
         # Aplicar LoRAs al pipeline usando diffusers
         # Necesitamos unload primero para limpiar LoRAs anteriores
