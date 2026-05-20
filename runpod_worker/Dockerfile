@@ -20,6 +20,8 @@ WORKDIR /app
 
 # Copiar y instalar dependencias Python primero (mejor cache de Docker)
 COPY requirements.txt .
+# Instalar PyTorch oficial optimizado para CUDA 12.1 (garantiza soporte para arquitecturas Ada Lovelace RTX 4090/6000)
+RUN python3 -m pip install --no-cache-dir torch==2.3.0 torchvision==0.18.0 --index-url https://download.pytorch.org/whl/cu121
 RUN python3 -m pip install --no-cache-dir -r requirements.txt
 
 # Copiar el handler

@@ -1,9 +1,6 @@
 # RunPod SDK
 runpod==1.7.3
 
-# PyTorch con CUDA (ya viene en la imagen base, pero por si acaso)
-torch==2.3.0
-torchvision==0.18.0
 
 # Diffusers y HuggingFace
 diffusers==0.30.3
