@@ -7,7 +7,8 @@ FROM runpod/base:0.6.2-cuda12.1.0
 # Variables de build
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
-    HF_HOME=/workspace/cache/huggingface
+    HF_HOME=/workspace/cache/huggingface \
+    HF_HUB_ENABLE_HF_TRANSFER=0
 
 # Dependencias del sistema
 RUN apt-get update && apt-get install -y --no-install-recommends \
