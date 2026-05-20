@@ -100,11 +100,16 @@ def handler(job):
         if lora2_url:
             lora2_path = download_lora(lora2_url, "nsfw_style")
 
-        # ⚠️ CRÍTICO: Para evitar errores de CUDA (device mismatch / assertion),
-        # removemos temporalmente todos los hooks de CPU offload. Esto devuelve el
-        # pipeline a su estado limpio para que PEFT pueda modificar los pesos sin interferencia.
-        print("   📦 Desactivando hooks de CPU offload temporalmente...")
+        # ⚠️ CRÍTICO: Para evitar errores de CUDA (device mismatch) y liberar VRAM:
+        # 1. Removemos temporalmente todos los hooks de CPU offload.
+        # 2. Movemos todo el pipeline a la CPU para liberar el 100% de la VRAM.
+        # 3. Limpiamos el caché de CUDA.
+        # Esto permite que PEFT aplique los LoRAs de forma segura en memoria de sistema (RAM)
+        # sin saturar la VRAM de la GPU.
+        print("   📦 Desactivando hooks y liberando VRAM temporalmente...")
         pipe.remove_all_hooks()
+        pipe.to("cpu")
+        torch.cuda.empty_cache()
 
         # Aplicar LoRAs al pipeline usando diffusers
         # Necesitamos unload primero para limpiar LoRAs anteriores
