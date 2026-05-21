@@ -108,8 +108,13 @@ def call_runpod(payload: dict, timeout_sec: int = 1800) -> dict:
         print(f"   [{elapsed}s] Estado: {status}")
 
     if status == "FAILED":
+        err = data.get("error", "Sin detalle")
         print(f"\n❌ El job falló en RunPod:")
-        print(f"   {data.get('error', 'Sin detalle')}")
+        print(f"   {err}")
+        if "timed out" in str(err).lower():
+            print("\n💡 Casi seguro: Execution Timeout del endpoint es muy bajo (300s o menos).")
+            print("   RunPod → pixel-kate-nsfw → Manage → Execution Timeout → 1800")
+            print("   La inferencia FLUX 768×20 steps necesita ~2-3 min SOLO de generación.")
         sys.exit(1)
 
     if status != "COMPLETED":
@@ -158,10 +163,11 @@ def main():
                         help="URL directa al .safetensors del LoRA NSFW")
     parser.add_argument("--lora2-scale", type=float, default=0.5,
                         help="Intensidad del LoRA NSFW (0.3-0.7)")
-    parser.add_argument("--width",  type=int, default=768,
-                        help="768 recomendado con sequential offload en GPU 24GB")
-    parser.add_argument("--height", type=int, default=768)
-    parser.add_argument("--steps",  type=int, default=24)
+    parser.add_argument("--width",  type=int, default=512,
+                        help="512 recomendado (RTX 4090 + dual LoRA fusionado)")
+    parser.add_argument("--height", type=int, default=512)
+    parser.add_argument("--steps",  type=int, default=16,
+                        help="16 steps ≈ 30-60s de inferencia con model offload")
     parser.add_argument("--timeout", type=int, default=1800,
                         help="Segundos máximos de espera (default 1800)")
     parser.add_argument("--guidance", type=float, default=3.5)
