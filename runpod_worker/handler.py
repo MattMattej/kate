@@ -95,6 +95,9 @@ def free_gpu():
         log(f"   ⚠️  Error freeing GPU: {e}")
 
 
+_downloaded_loras: dict[str, str] = {}
+
+
 def download_lora(url: str, filename: str, max_retries: int = 3) -> str:
     """
     Descarga un LoRA a disco. Retorna el path (str). Cachea si ya existe.
@@ -133,6 +136,22 @@ def download_lora(url: str, filename: str, max_retries: int = 3) -> str:
             raise RuntimeError(f"Failed to download {filename} after {max_retries} attempts: {e}")
     
     return path  # nunca lista — SIEMPRE str
+
+
+def prepare_loras() -> None:
+    """Descarga y cachea las LoRA files antes del primer job."""
+    global _downloaded_loras
+    os.makedirs(LORA_DIR, exist_ok=True)
+    if _downloaded_loras:
+        log("   ℹ️  LoRAs ya descargadas")
+        return
+
+    log("🔧 Preparando LoRAs antes del primer job...")
+    if LORA1_URL:
+        _downloaded_loras["kate"] = download_lora(LORA1_URL, "kate_identity.safetensors")
+    if LORA2_URL:
+        _downloaded_loras["nsfw"] = download_lora(LORA2_URL, "nsfw_style.safetensors")
+    log("   ✅ LoRAs preparadas")
 
 
 def init_pipeline():
@@ -176,7 +195,18 @@ def init_pipeline():
             pipe.vae.enable_slicing()
             pipe.vae.enable_tiling()
             log(f"   ✅ VAE slicing + tiling activado")
-        
+
+        # Reducción adicional de memoria para la inferencia
+        if hasattr(pipe, "enable_attention_slicing"):
+            pipe.enable_attention_slicing()
+            log(f"   ✅ Attention slicing activado")
+        if hasattr(pipe, "enable_xformers_memory_efficient_attention"):
+            try:
+                pipe.enable_xformers_memory_efficient_attention()
+                log(f"   ✅ XFormers memory efficient attention activado")
+            except Exception as ex:
+                log(f"   ⚠️  No se pudo activar xformers: {ex}")
+
         log(f"   ✅ Modelo base cargado ({time.time()-t0:.0f}s)")
 
         # ── 2. Cargar LoRAs INDIVIDUALMENTE (cada uno recibe UN str path) ─────────
@@ -184,20 +214,22 @@ def init_pipeline():
         scales: list[float] = []
 
         if LORA1_URL:
-            log(f"   📥 LoRA 1 (kate_identity) desde URL...")
-            lora1_path = download_lora(LORA1_URL, "kate_identity.safetensors")
+            lora1_path = _downloaded_loras.get("kate")
+            if not lora1_path:
+                log(f"   📥 LoRA 1 (kate_identity) desde URL...")
+                lora1_path = download_lora(LORA1_URL, "kate_identity.safetensors")
             t1 = time.time()
-            # CRÍTICO: load_lora_weights() recibe STR path, NO lista
             pipe.load_lora_weights(lora1_path, adapter_name="kate")
             names.append("kate")
             scales.append(LORA1_SCALE)
             log(f"   ✓ LoRA kate cargado ({time.time()-t1:.1f}s)")
 
         if LORA2_URL:
-            log(f"   📥 LoRA 2 (nsfw_style) desde URL...")
-            lora2_path = download_lora(LORA2_URL, "nsfw_style.safetensors")
+            lora2_path = _downloaded_loras.get("nsfw")
+            if not lora2_path:
+                log(f"   📥 LoRA 2 (nsfw_style) desde URL...")
+                lora2_path = download_lora(LORA2_URL, "nsfw_style.safetensors")
             t2 = time.time()
-            # CRÍTICO: load_lora_weights() recibe STR path, NO lista
             pipe.load_lora_weights(lora2_path, adapter_name="nsfw")
             names.append("nsfw")
             scales.append(LORA2_SCALE)
@@ -390,10 +422,12 @@ log(f"   Model: {MODEL_ID}")
 log(f"   Offload: {OFFLOAD_TYPE} | MAX_SIDE: {MAX_SIDE} | DEFAULT_STEPS: {DEFAULT_STEPS}")
 log(f"   LORA1: {LORA1_SCALE} scale | LORA2: {LORA2_SCALE} scale")
 log(f"   El modelo cargará en el PRIMER job (lazy initialization)")
+log(f"   Pero las LoRAs ya se descargarán al iniciar el worker")
 log("=" * 70)
 log("")
 
 try:
+    prepare_loras()
     runpod.serverless.start({"handler": handler})
 except KeyboardInterrupt:
     log("⚠️  Servidor detenido por usuario")
