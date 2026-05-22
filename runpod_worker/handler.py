@@ -277,14 +277,19 @@ def handler(job):
     """
     inp     = job.get("input", {})
     prompt  = inp.get("prompt", "KATESTYLE portrait, soft lighting, masterpiece, best quality")
-    width   = min(int(inp.get("width",  MAX_SIDE)), MAX_SIDE)
-    height  = min(int(inp.get("height", MAX_SIDE)), MAX_SIDE)
+    requested_width  = int(inp.get("width",  MAX_SIDE))
+    requested_height = int(inp.get("height", MAX_SIDE))
+    width   = min(requested_width, MAX_SIDE)
+    height  = min(requested_height, MAX_SIDE)
     steps   = int(inp.get("steps",    DEFAULT_STEPS))
     guidance = float(inp.get("guidance", 3.5))
     seed    = inp.get("seed", None)
 
     job_id = job.get("id", "unknown")
     log(f"\n🎨 Job {job_id} recibido")
+    if requested_width != width or requested_height != height:
+        log(f"   ⚠️  Requested {requested_width}x{requested_height} exceeds MAX_SIDE={MAX_SIDE}; usando {width}x{height}")
+        log(f"   Para generar 1024x1024, establece MAX_IMAGE_SIDE=1024 en el endpoint de RunPod si VRAM lo permite.")
     log(f"   Res: {width}x{height} | Steps: {steps} | Guidance: {guidance}")
     log(f"   Prompt: {prompt[:120]}...")
     log_gpu_state("job-start")

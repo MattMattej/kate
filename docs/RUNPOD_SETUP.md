@@ -24,7 +24,7 @@
 
 ```env
 CPU_OFFLOAD_TYPE=model
-MAX_IMAGE_SIDE=512  # alias: MAX_SIDE
+MAX_IMAGE_SIDE=512  # alias: MAX_SIDE (set to 1024 for 1024x1024 output if your GPU/memory can handle it)
 DEFAULT_STEPS=16
 FUSE_LORAS=0
 LORA1_URL=https://v3b.fal.media/files/b/0a9aca2a/hToqwVnqjQOWYiHgKNx9O_pytorch_lora_weights.safetensors
