@@ -39,7 +39,7 @@ HF_TOKEN      = os.environ.get("HF_TOKEN", "").strip()
 
 # CPU_OFFLOAD_TYPE: "sequential" (menor VRAM) o "model" (más rápido, ~20 GB VRAM)
 OFFLOAD_TYPE  = os.environ.get("CPU_OFFLOAD_TYPE", "sequential").lower()
-MAX_SIDE      = int(os.environ.get("MAX_IMAGE_SIDE", "768"))
+MAX_SIDE      = int(os.environ.get("MAX_IMAGE_SIDE", os.environ.get("MAX_SIDE", "768")))
 DEFAULT_STEPS = int(os.environ.get("DEFAULT_STEPS", "20"))
 
 # URLs de LoRAs — pueden sobreescribirse en RunPod Environment
