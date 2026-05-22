@@ -1,8 +1,12 @@
 # RunPod SDK
 runpod==1.7.3
 
-
-# Diffusers y HuggingFace
+# Diffusers y HuggingFace (versiones locked para reproducibilidad)
+# diffusers 0.30.3 es compatible con:
+#   - load_lora_weights(str_path, adapter_name) → NO soporta lista
+#   - set_adapters() → activa múltiplos adapters con pesos
+#   - enable_sequential_cpu_offload() → compatible con LoRAs
+#   - NO compatible con fuse_lora() + sequential_cpu_offload() (hang infinito)
 diffusers==0.30.3
 transformers==4.44.2
 accelerate==0.33.0
@@ -14,3 +18,7 @@ Pillow==10.4.0
 requests==2.32.3
 sentencepiece==0.2.0
 protobuf==5.27.3
+
+# Logs y debugging
+python-dotenv==1.0.0
+
